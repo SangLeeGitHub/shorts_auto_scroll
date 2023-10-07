@@ -1,0 +1,8 @@
+/venv
+/dist
+/build
+/.idea
+client_secret.json
+shorts_auto_scroll.spec
+api.key
+api_key_encoder.py
