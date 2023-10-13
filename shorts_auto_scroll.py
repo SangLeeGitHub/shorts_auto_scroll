@@ -4,6 +4,8 @@ import re
 import sys
 import time
 import pyautogui
+from PyQt6.QtNetwork import QNetworkCookie
+from PyQt6.QtWebEngineCore import QWebEngineProfile
 from cryptography.fernet import Fernet
 
 if os.name == 'nt':
@@ -14,9 +16,9 @@ else:
     import Quartz
     from AppKit import NSRunningApplication, NSApplicationActivateIgnoringOtherApps
 
-from PyQt5.QtCore import QUrl, QTimer, QEvent, Qt, QCoreApplication
-from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QMessageBox, QMenu, QMenuBar, QLabel
-from PyQt5.QtWebEngineWidgets import QWebEngineView
+from PyQt6.QtCore import QUrl, QTimer, QEvent, Qt, QByteArray, QDateTime
+from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QMessageBox, QMenu, QMenuBar, QLabel
+from PyQt6.QtWebEngineWidgets import QWebEngineView
 from googleapiclient.discovery import build
 
 
@@ -39,23 +41,28 @@ def decrypt_message(encrypted_message, key):
     decrypted_message = f.decrypt(encrypted_message.encode()).decode('utf-8')
     return decrypted_message
 
+
 def get_api_key_from_file(filename="api.key"):
+    api_key_path = ''
     try:
         # For PyInstaller
         if getattr(sys, 'frozen', False):
-            bundle_dir = sys._MEIPASS
+            bundle_dir = os.path.dirname(sys.executable)
+            resource_path = os.path.join(os.path.dirname(bundle_dir), 'Resources')
         else:
-            bundle_dir = os.path.dirname(os.path.abspath(__file__))
+            resource_path = os.path.dirname(os.path.abspath(__file__))
 
-        api_key_path = os.path.join(bundle_dir, filename)
+        api_key_path = os.path.join(resource_path, filename)
 
-        decryption_key = b"YOUR_GENERATED_KEY_HERE"
+        # decryption_key = b"YOUR_GENERATED_KEY_HERE"
+        decryption_key = b"wCtJtVswubkR3-20taJSN4LHQTryUl5hO3ydrNhmMoA="
 
         with open(api_key_path, 'r') as file:
             encrypted_api_key = file.read().strip()
+            os.system(f'logger "API key loaded "')
             return decrypt_message(encrypted_api_key, decryption_key)
     except FileNotFoundError:
-        print(f"Error: '{filename}' file not found!")
+        os.system(f'logger "Error: {api_key_path} file not found!"')
         sys.exit(1)
 
 
@@ -73,7 +80,7 @@ def get_video_duration(api_key, video_id):
         duration_in_iso8601 = content_details["duration"]
         return iso8601_duration_to_seconds(duration_in_iso8601)
     else:
-        print("Error fetching video details.")
+        os.system(f'logger "Error fetching video details."')
         return None
 
 
@@ -89,7 +96,7 @@ if os.name == 'nt':
             win32api.PostMessage(hwnd, win32con.WM_KEYDOWN, key_code, 0)
             win32api.PostMessage(hwnd, win32con.WM_KEYUP, key_code, 0)
         else:
-            print(f"Window '{window_title}' not found!")
+            os.system(f'logger "{window_title} not found!"')
 else:
     def send_key_to_app(title_to_find, key_code):
         activate_app()
@@ -100,9 +107,97 @@ else:
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
 
 
+MAX_FILE_SIZE = 300 * 1024  # 300k
+
+
+def maintain_file_size():
+    if os.path.getsize(cookies_file_path) > MAX_FILE_SIZE:
+        with open(cookies_file_path, 'r') as file:
+            lines = file.readlines()
+
+        while sum(len(line) for line in lines) > MAX_FILE_SIZE and lines:
+            lines.pop(0)
+
+        with open(cookies_file_path, 'w') as file:
+            file.writelines(lines)
+
+
+def save_cookie(cookie):
+    domain = cookie.domain()
+    if ".google.com" in domain:
+        cookie_str = cookie.toRawForm().data().decode()
+
+        try:
+            with open(cookies_file_path, "r") as file:
+                existing_cookies = file.readlines()
+        except FileNotFoundError:
+            existing_cookies = []
+
+        for existing_cookie in existing_cookies:
+            if cookie_str.strip() == existing_cookie.strip():
+                return
+
+        with open(cookies_file_path, "a") as file:
+            file.write(cookie_str + "\n")
+
+        maintain_file_size()
+
+
+def load_cookies():
+    try:
+        valid_cookies = []
+        with open(cookies_file_path, "r") as file:
+            for line in file:
+                parts = line.strip().split(";")
+                cookie = QNetworkCookie()
+
+                if "=" not in parts[0]:
+                    continue  # skip this iteration
+
+                # name and value
+                name, value = parts[0].split("=", 1)
+                cookie.setName(name.strip().encode())
+                cookie.setValue(value.strip().encode())
+
+                is_expired = False
+
+                # other attributes
+                for part in parts[1:]:
+                    if "=" not in part:
+                        continue  # skip this part
+
+                    key, value = part.split("=", 1)
+                    if "domain" in key:
+                        cookie.setDomain(value.strip())
+                    elif "path" in key:
+                        cookie.setPath(value.strip())
+                    elif "expires" in key:
+                        expiration_date = QDateTime.fromString(value.strip(), "ddd, dd MMM yyyy HH:mm:ss GMT")
+                        cookie.setExpirationDate(expiration_date)
+                        if expiration_date < QDateTime.currentDateTime():
+                            is_expired = True
+                            break
+
+                if not is_expired:
+                    valid_cookies.append(line.strip())
+                    cookie_store.setCookie(cookie)
+
+        # 만료된 쿠키 제거 후 유효한 쿠키만 파일에 다시 작성
+        with open(cookies_file_path, "w") as file:
+            file.write("\n".join(valid_cookies))
+
+    except Exception as e:
+        if isinstance(e, FileNotFoundError):
+            os.system("Warning: cookies.txt file not found. Continuing without loading cookies.")
+        else:
+            os.system(f'logger "Another error occurred: {e}"')
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super(MainWindow, self).__init__()
+
+        self.api_key = get_api_key_from_file()
         self.video_id = None
         self.original_geometry = None
         self.init_ui()
@@ -115,7 +210,6 @@ class MainWindow(QMainWindow):
         self.remaining_timer.timeout.connect(self.update_remaining_time)
         self.is_key_from_function = False
         self.web_view.installEventFilter(self)
-        self.api_key = get_api_key_from_file()
         # self.setWindowOpacity(.2)
 
     def init_ui(self):
@@ -153,17 +247,18 @@ class MainWindow(QMainWindow):
     def show_about_popup(self):
         msg_box = QMessageBox(self)
         msg_box.setWindowTitle("About")
-        msg_box.setText('Shorts Auto Scroll 0.6<br><a href="https://nore.co/app/sas">by Slime</a><br>')
-        msg_box.setTextInteractionFlags(Qt.TextBrowserInteraction)  # Enable interaction with the link
-        msg_box.setIcon(QMessageBox.Information)
-        msg_box.exec_()
+        msg_box.setText('Shorts Auto Scroll 0.7<br><a href="https://nore.co/app/sas">by Slime</a><br>')
+        msg_box.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextBrowserInteraction)  # Enable interaction with the link
+        msg_box.setIcon(QMessageBox.Icon.Information)
+        msg_box.exec()
 
     def close_application(self):
         self.close()
 
     def eventFilter(self, source, event):
-        if source == self.web_view and event.type() == QEvent.ShortcutOverride:
-            if event.key() == Qt.Key_Down:
+        if source == self.web_view and event.type() == QEvent.Type.ShortcutOverride:
+            if event.key() == Qt.Key.Key_Down:
                 # 만약 이 키 이벤트가 함수에 의한 것이 아니라면 start_loop()를 호출
                 if not self.is_key_from_function:
                     QTimer.singleShot(1000, self.start_loop)
@@ -173,49 +268,73 @@ class MainWindow(QMainWindow):
         return super(MainWindow, self).eventFilter(source, event)
 
     def changeEvent(self, event):
-        if event.type() == QEvent.WindowStateChange:
-            if self.windowState() & Qt.WindowMinimized:
+        if event.type() == QEvent.Type.WindowStateChange:
+            if self.windowState() & Qt.WindowState.WindowMinimized:
                 # 창이 다른 창들 뒤에 머물도록 설정
-                self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnBottomHint)
+                self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnBottomHint)
                 # 창 상태를 다시 정상 상태로 설정하여 최소화 효과를 제거
-                self.setWindowState(Qt.WindowNoState)
+                self.setWindowState(Qt.WindowState.WindowNoState)
                 self.show()
 
             else:
                 # WindowStaysOnBottomHint 속성 해제
-                self.setWindowFlags(self.windowFlags() & ~Qt.WindowStaysOnBottomHint)
+                self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowStaysOnBottomHint)
                 self.show()
 
     def google_login(self):
-        self.web_view.setUrl(QUrl("https://accounts.google.com/ServiceLogin"))
+        os.system(f'logger "google_login"')
+        self.web_view.setUrl(QUrl("https://accounts.google.com"))
         self.web_view.loadFinished.connect(self.on_load_finished)
         self.setCentralWidget(self.web_view)
 
     def on_load_finished(self, ok):
         current_url = self.web_view.url().toString()
+        os.system(f'logger "on_load_finished: {current_url}"')
 
         if "youtube.com/shorts" in current_url:
-            QTimer.singleShot(1000, self.send_tab_and_enter)
+            os.system(f'logger "youtube.com/shorts"')
+            QTimer.singleShot(500, self.send_tab_and_enter)
         elif "accounts.google.com" not in current_url:
+            os.system(f'logger "not accounts.google.com"')
             self.web_view.setUrl(QUrl("https://youtube.com/shorts"))
 
     def send_tab_and_enter(self):
+        os.system(f'logger "send_tab_and_enter"')
         QTimer.singleShot(500, self.press_tab_then_enter)
 
     def press_tab_then_enter(self):
-        pyautogui.press('tab')
-        pyautogui.press('enter')
-        pyautogui.press('esc')
-        self.start_loop()
+        if getattr(sys, 'frozen', False):
+            os.system(f'logger "press_tab_then_enter 1"')
+            # pyautogui.press('tab')
+            # pyautogui.press('tab')
+            # pyautogui.press('tab')
+            # pyautogui.press('tab')
+            # pyautogui.press('tab')
+            # pyautogui.press('tab')
+            # pyautogui.press('tab')
+            # pyautogui.press('enter')
+        else:
+            os.system(f'logger "press_tab_then_enter 2"')
+            pyautogui.press('tab')
+            pyautogui.press('enter')
+            pyautogui.press('esc')
+            self.press_down()
 
     def start_loop(self):
+        os.system(f'logger "start_loop"')
         js_code = "window.location.href"
         self.web_view.page().runJavaScript(js_code, self.on_url_retrieved)
 
     def handle_video(self):
+        os.system(f'logger "handle_video"')
         if self.video_id:
-            print(self.video_id)
+            os.system(f'logger "Loading video ID: {self.video_id}"')
             start_time = time.time()
+
+            if not self.api_key:
+                os.system(f'logger "API key not available yet."')
+                return
+
             duration_in_seconds = get_video_duration(self.api_key, self.video_id)
             execution_time = time.time() - start_time
 
@@ -245,6 +364,7 @@ class MainWindow(QMainWindow):
                 self.remaining_timer.stop()
 
     def press_down(self):
+        os.system(f'logger "press_down"')
         self.is_key_from_function = True  # 플래그 설정
         if os.name == 'nt':
             send_key_to_window(self.title, win32con.VK_DOWN)
@@ -254,6 +374,11 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(2000, self.start_loop)  # 다시 루프 시작
 
     def on_url_retrieved(self, url):
+        os.system(f'logger "On URL retrieved: {url}"')
+        if 'shorts/' not in url:
+            QTimer.singleShot(500, self.start_loop)
+            return
+
         match = re.search(r'shorts/([\w\-]+)', url)
         if match:
             self.video_id = match.group(1)
@@ -264,6 +389,25 @@ class MainWindow(QMainWindow):
 
 
 app = QApplication(sys.argv)
-window = MainWindow()
-window.show()
-app.exec_()
+
+os.system('logger "Getting started with the Shorts Auto Scroll."')
+
+support_path = os.path.expanduser('~/Library/Application Support/ShortsAutoScroll')
+if not os.path.exists(support_path):
+    os.makedirs(support_path)
+cookies_file_path = os.path.join(support_path, 'cookies.txt')
+
+try:
+    profile = QWebEngineProfile.defaultProfile()
+    cookie_store = profile.cookieStore()
+    cookie_store.cookieAdded.connect(save_cookie)
+
+    load_cookies()
+
+    window = MainWindow()
+    window.show()
+
+    sys.exit(app.exec())
+
+except Exception as e:
+    error_dialog = QMessageBox.critical(None, "Error", str(e))
