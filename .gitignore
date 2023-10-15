@@ -4,5 +4,8 @@
 /.idea
 client_secret.json
 shorts_auto_scroll.spec
+Shorts Auto Scroll.spec
 api.key
 api_key_encoder.py
+*.dmg
+*.pkg
