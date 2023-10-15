@@ -48,59 +48,6 @@ def is_app_in_accessibility(program_name):
         return False
 
 
-def add_to_accessibility(program_name):
-    # 1. 스크립트 실행 권한 부여
-    os.system(f"chmod +x '{program_name}'")  # 경로에 공백이 있을 수 있으므로 따옴표로 감싸줍니다.
-
-    # 2. Privacy & Security 설정 변경
-    applescript_code = f"""
-    tell application "System Events"
-        try
-            set isAppAlreadyAdded to false
-            set appList to every application process whose bundle identifier is "{program_name}"
-            repeat with appProcess in appList
-                try
-                    set appName to name of appProcess
-                    if appName is not equal to "" then
-                        set isAppAlreadyAdded to true
-                        exit repeat
-                    end if
-                end try
-            end repeat
-            if not isAppAlreadyAdded then
-                set theApp to POSIX file "{program_name}" as alias
-                tell security preferences
-                    set currentPrivileges to get the properties
-                    set requireAdmin to get the require admin password
-                    set requirePassword to get the require password to unlock
-                    set theScript to "do shell script \\"" & (POSIX path of theApp) & " && exit 0 || exit 1\\""
-                    set myPrivileges to (name of currentPrivileges)
-                    set myAdmin to (require admin password of currentPrivileges)
-                    set myPassword to (require password to unlock of currentPrivileges)
-                    if requireAdmin is not equal to myAdmin then
-                        set require admin password of currentPrivileges to not requireAdmin
-                    end if
-                    if requirePassword is not equal to myPassword then
-                        set require password to unlock of currentPrivileges to not requirePassword
-                    end if
-                    set properties of security preferences to currentPrivileges
-                    try
-                        do shell script theScript
-                    on error
-                        display dialog "Failed to add {program_name} to Accessibility. Please try again." buttons {"OK"} default button "OK"
-                    end try
-                end tell
-            end if
-        on error
-            display dialog "An error occurred. Please try again." buttons {"OK"} default button "OK"
-        end try
-    end tell
-    """
-
-    # AppleScript 실행
-    os.system(f"osascript -e '{applescript_code}'")
-
-
 def iso8601_duration_to_seconds(duration):
     # ISO 8601 지속 시간을 파싱하기 위한 정규 표현식
     pattern = r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?'
@@ -447,8 +394,6 @@ class MainWindow(QMainWindow):
 if os.name != 'nt':
     program_name = "/Applications/Shorts Auto Scroll.app"
     is_app_in_accessibility(program_name)
-    if not is_app_in_accessibility(program_name):
-        add_to_accessibility(program_name)
 
 app = QApplication(sys.argv)
 
