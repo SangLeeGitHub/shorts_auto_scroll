@@ -7,6 +7,7 @@ import pyautogui
 from PyQt6.QtNetwork import QNetworkCookie
 from PyQt6.QtWebEngineCore import QWebEngineProfile
 from cryptography.fernet import Fernet
+import subprocess
 
 if os.name == 'nt':
     import win32con
@@ -20,6 +21,84 @@ from PyQt6.QtCore import QUrl, QTimer, QEvent, Qt, QByteArray, QDateTime
 from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QMessageBox, QMenu, QMenuBar, QLabel
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from googleapiclient.discovery import build
+
+
+def is_app_in_accessibility(program_name):
+    script = f'''
+        tell application "System Events"
+            set isAppInAccessibility to false
+            repeat with theProcess in (every application process whose name is not "Shorts Auto Scroll")
+                try
+                    if app name of theProcess is not equal to "" then
+                        set isAppInAccessibility to true
+                        exit repeat
+                    end if
+                end try
+            end repeat
+        end tell
+        return isAppInAccessibility
+    '''
+
+    result = subprocess.run(['osascript', '-e', script], capture_output=True, text=True)
+    if result.returncode == 0:
+        return result.stdout.strip() == 'true'
+    else:
+        # AppleScript 실행 중 오류 발생
+        print("AppleScript 실행 중 오류 발생:", result.stderr)
+        return False
+
+
+def add_to_accessibility(program_name):
+    # 1. 스크립트 실행 권한 부여
+    os.system(f"chmod +x '{program_name}'")  # 경로에 공백이 있을 수 있으므로 따옴표로 감싸줍니다.
+
+    # 2. Privacy & Security 설정 변경
+    applescript_code = f"""
+    tell application "System Events"
+        try
+            set isAppAlreadyAdded to false
+            set appList to every application process whose bundle identifier is "{program_name}"
+            repeat with appProcess in appList
+                try
+                    set appName to name of appProcess
+                    if appName is not equal to "" then
+                        set isAppAlreadyAdded to true
+                        exit repeat
+                    end if
+                end try
+            end repeat
+            if not isAppAlreadyAdded then
+                set theApp to POSIX file "{program_name}" as alias
+                tell security preferences
+                    set currentPrivileges to get the properties
+                    set requireAdmin to get the require admin password
+                    set requirePassword to get the require password to unlock
+                    set theScript to "do shell script \\"" & (POSIX path of theApp) & " && exit 0 || exit 1\\""
+                    set myPrivileges to (name of currentPrivileges)
+                    set myAdmin to (require admin password of currentPrivileges)
+                    set myPassword to (require password to unlock of currentPrivileges)
+                    if requireAdmin is not equal to myAdmin then
+                        set require admin password of currentPrivileges to not requireAdmin
+                    end if
+                    if requirePassword is not equal to myPassword then
+                        set require password to unlock of currentPrivileges to not requirePassword
+                    end if
+                    set properties of security preferences to currentPrivileges
+                    try
+                        do shell script theScript
+                    on error
+                        display dialog "Failed to add {program_name} to Accessibility. Please try again." buttons {"OK"} default button "OK"
+                    end try
+                end tell
+            end if
+        on error
+            display dialog "An error occurred. Please try again." buttons {"OK"} default button "OK"
+        end try
+    end tell
+    """
+
+    # AppleScript 실행
+    os.system(f"osascript -e '{applescript_code}'")
 
 
 def iso8601_duration_to_seconds(duration):
@@ -54,8 +133,7 @@ def get_api_key_from_file(filename="api.key"):
 
         api_key_path = os.path.join(resource_path, filename)
 
-        # decryption_key = b"YOUR_GENERATED_KEY_HERE"
-        decryption_key = b"wCtJtVswubkR3-20taJSN4LHQTryUl5hO3ydrNhmMoA="
+        decryption_key = b"YOUR_GENERATED_KEY_HERE"
 
         with open(api_key_path, 'r') as file:
             encrypted_api_key = file.read().strip()
@@ -99,8 +177,6 @@ if os.name == 'nt':
             os.system(f'logger "{window_title} not found!"')
 else:
     def send_key_to_app(title_to_find, key_code):
-        activate_app()
-
         event = Quartz.CGEventCreateKeyboardEvent(None, key_code, True)
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
         event = Quartz.CGEventCreateKeyboardEvent(None, key_code, False)
@@ -173,10 +249,11 @@ def load_cookies():
                         cookie.setPath(value.strip())
                     elif "expires" in key:
                         expiration_date = QDateTime.fromString(value.strip(), "ddd, dd MMM yyyy HH:mm:ss GMT")
-                        cookie.setExpirationDate(expiration_date)
-                        if expiration_date < QDateTime.currentDateTime():
-                            is_expired = True
-                            break
+                        if expiration_date.isValid():
+                            cookie.setExpirationDate(expiration_date)
+                            if expiration_date < QDateTime.currentDateTime():
+                                is_expired = True
+                                break
 
                 if not is_expired:
                     valid_cookies.append(line.strip())
@@ -282,53 +359,33 @@ class MainWindow(QMainWindow):
                 self.show()
 
     def google_login(self):
-        os.system(f'logger "google_login"')
         self.web_view.setUrl(QUrl("https://accounts.google.com"))
         self.web_view.loadFinished.connect(self.on_load_finished)
         self.setCentralWidget(self.web_view)
 
     def on_load_finished(self, ok):
         current_url = self.web_view.url().toString()
-        os.system(f'logger "on_load_finished: {current_url}"')
 
         if "youtube.com/shorts" in current_url:
-            os.system(f'logger "youtube.com/shorts"')
             QTimer.singleShot(500, self.send_tab_and_enter)
         elif "accounts.google.com" not in current_url:
-            os.system(f'logger "not accounts.google.com"')
             self.web_view.setUrl(QUrl("https://youtube.com/shorts"))
 
     def send_tab_and_enter(self):
-        os.system(f'logger "send_tab_and_enter"')
         QTimer.singleShot(500, self.press_tab_then_enter)
 
     def press_tab_then_enter(self):
-        if getattr(sys, 'frozen', False):
-            os.system(f'logger "press_tab_then_enter 1"')
-            # pyautogui.press('tab')
-            # pyautogui.press('tab')
-            # pyautogui.press('tab')
-            # pyautogui.press('tab')
-            # pyautogui.press('tab')
-            # pyautogui.press('tab')
-            # pyautogui.press('tab')
-            # pyautogui.press('enter')
-        else:
-            os.system(f'logger "press_tab_then_enter 2"')
-            pyautogui.press('tab')
-            pyautogui.press('enter')
-            pyautogui.press('esc')
-            self.press_down()
+        pyautogui.press('tab')
+        pyautogui.press('enter')
+        pyautogui.press('esc')
+        self.press_down()
 
     def start_loop(self):
-        os.system(f'logger "start_loop"')
         js_code = "window.location.href"
         self.web_view.page().runJavaScript(js_code, self.on_url_retrieved)
 
     def handle_video(self):
-        os.system(f'logger "handle_video"')
         if self.video_id:
-            os.system(f'logger "Loading video ID: {self.video_id}"')
             start_time = time.time()
 
             if not self.api_key:
@@ -364,17 +421,16 @@ class MainWindow(QMainWindow):
                 self.remaining_timer.stop()
 
     def press_down(self):
-        os.system(f'logger "press_down"')
         self.is_key_from_function = True  # 플래그 설정
         if os.name == 'nt':
             send_key_to_window(self.title, win32con.VK_DOWN)
         else:
+            activate_app()
             send_key_to_app(self.title, 125)
 
         QTimer.singleShot(2000, self.start_loop)  # 다시 루프 시작
 
     def on_url_retrieved(self, url):
-        os.system(f'logger "On URL retrieved: {url}"')
         if 'shorts/' not in url:
             QTimer.singleShot(500, self.start_loop)
             return
@@ -387,6 +443,12 @@ class MainWindow(QMainWindow):
             self.video_id_label.setText('Video ID: None')
             self.length_label.setText('Length: Unknown')
 
+
+if os.name != 'nt':
+    program_name = "/Applications/Shorts Auto Scroll.app"
+    is_app_in_accessibility(program_name)
+    if not is_app_in_accessibility(program_name):
+        add_to_accessibility(program_name)
 
 app = QApplication(sys.argv)
 
